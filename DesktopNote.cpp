@@ -4,6 +4,7 @@
 #define _USE_MATH_DEFINES
 #include <windows.h>
 #include <commctrl.h>
+#include <commdlg.h>
 #include <string>
 #include <fstream>
 #include <sstream>
@@ -13,6 +14,7 @@
 #include <cmath>
 
 #pragma comment(lib, "comctl32.lib")
+#pragma comment(lib, "comdlg32.lib")
 
 // ============================================================
 // Desktop Note - Complete Win32 V2
@@ -44,6 +46,9 @@
 #define ID_SET_CANCEL   3009
 #define ID_SET_TOP      3010
 #define ID_SET_AUTOSAVE 3011
+#define ID_SET_NOTE_BG 3012
+#define ID_SET_NOTE_TEXT 3013
+#define ID_SET_ACCENT 3014
 
 static HWND gMain = nullptr;
 static HWND gNote = nullptr;
@@ -51,6 +56,7 @@ static HWND gStatus = nullptr;
 static HWND gCalendar = nullptr;
 static HFONT gUiFont = nullptr;
 static HFONT gNoteFont = nullptr;
+static HBRUSH gNoteBgBrush = nullptr;
 static bool gUnlocked = false;
 static bool gSettingsOpen = false;
 
@@ -68,6 +74,9 @@ struct AppConfig {
     int opacity = 96;
     int theme = 0;
     int clockStyle = 0;
+    COLORREF noteBg = RGB(255,255,255);
+    COLORREF noteText = RGB(35,35,35);
+    COLORREF accent = RGB(45,105,190);
     std::wstring password = L"1234";
 };
 
@@ -79,7 +88,9 @@ static COLORREF BgColor() { return gCfg.theme ? RGB(32,34,37) : RGB(247,247,245)
 static COLORREF PanelColor() { return gCfg.theme ? RGB(45,47,51) : RGB(255,255,255); }
 static COLORREF TextColor() { return gCfg.theme ? RGB(240,240,240) : RGB(35,35,35); }
 static COLORREF MutedColor() { return gCfg.theme ? RGB(185,185,185) : RGB(100,100,100); }
-static COLORREF AccentColor() { return gCfg.theme ? RGB(120,180,255) : RGB(70,110,180); }
+static COLORREF AccentColor() { return gCfg.accent; }
+static COLORREF CalendarSolarColor() { return gCfg.theme ? RGB(120,190,255) : RGB(40,105,190); }
+static COLORREF CalendarLunarColor() { return gCfg.theme ? RGB(255,120,120) : RGB(205,55,55); }
 
 static std::wstring Trim(const std::wstring& s) {
     size_t a = s.find_first_not_of(L" \t\r\n");
@@ -120,6 +131,9 @@ static void SaveConfig() {
     f << L"opacity=" << gCfg.opacity << L"\n";
     f << L"theme=" << gCfg.theme << L"\n";
     f << L"clockStyle=" << gCfg.clockStyle << L"\n";
+    f << L"noteBg=" << (unsigned long)gCfg.noteBg << L"\n";
+    f << L"noteText=" << (unsigned long)gCfg.noteText << L"\n";
+    f << L"accent=" << (unsigned long)gCfg.accent << L"\n";
     f << L"password=" << gCfg.password << L"\n";
 }
 
@@ -148,6 +162,9 @@ static void LoadConfig() {
         else if (k == L"opacity") gCfg.opacity = std::clamp(IntValue(v,96),55,100);
         else if (k == L"theme") gCfg.theme = std::clamp(IntValue(v,0),0,1);
         else if (k == L"clockStyle") gCfg.clockStyle = std::clamp(IntValue(v,0),0,1);
+        else if (k == L"noteBg") gCfg.noteBg = (COLORREF)IntValue(v,(int)RGB(255,255,255));
+        else if (k == L"noteText") gCfg.noteText = (COLORREF)IntValue(v,(int)RGB(35,35,35));
+        else if (k == L"accent") gCfg.accent = (COLORREF)IntValue(v,(int)RGB(45,105,190));
         else if (k == L"password" && !v.empty()) gCfg.password = v;
     }
 }
@@ -195,6 +212,10 @@ static void ApplyFontsToChildren(HWND parent) {
 
 static void ApplyOpacity() {
     SetLayeredWindowAttributes(gMain, 0, static_cast<BYTE>(255 * gCfg.opacity / 100), LWA_ALPHA);
+}
+static void RebuildNoteBrush() {
+    if (gNoteBgBrush) { DeleteObject(gNoteBgBrush); gNoteBgBrush=nullptr; }
+    gNoteBgBrush=CreateSolidBrush(gCfg.noteBg);
 }
 
 static int JulianDay(int d, int m, int y) {
@@ -354,7 +375,6 @@ static LRESULT CALLBACK CalendarProc(HWND h,UINT m,WPARAM wp,LPARAM lp) {
 
         HFONT old=(HFONT)SelectObject(dc,gUiFont);
         wchar_t title[128]{};
-        swprintf_s(title,L"%04d年?"); // overwritten below
         swprintf_s(title,L"%04d/%02d",gCalendarMonth.wYear,gCalendarMonth.wMonth);
         DrawTextCenter(dc,title,RECT{65,0,r.right-65,44},DT_CENTER);
         DrawTextCenter(dc,L"‹",RECT{0,0,55,44},DT_CENTER);
@@ -388,12 +408,12 @@ static LRESULT CALLBACK CalendarProc(HWND h,UINT m,WPARAM wp,LPARAM lp) {
             wchar_t s[64]{};
             LunarDate ld=SolarToLunar(day,gCalendarMonth.wMonth,gCalendarMonth.wYear);
             swprintf_s(s,L"%d",day);
-            SetTextColor(dc,TextColor());
+            SetTextColor(dc,CalendarSolarColor());
             DrawTextCenter(dc,s,RECT{cr.left,cr.top+2,cr.right,cr.top+24},DT_CENTER);
             if(gCfg.showLunar) {
                 wchar_t ls[32]{};
                 swprintf_s(ls,L"%d/%d",ld.day,ld.month);
-                SetTextColor(dc,MutedColor());
+                SetTextColor(dc,CalendarLunarColor());
                 DrawTextCenter(dc,ls,RECT{cr.left,cr.top+24,cr.right,cr.bottom-2},DT_CENTER);
             }
         }
@@ -520,6 +540,8 @@ struct SettingsState {
     HWND edtFont=nullptr, edtOpacity=nullptr;
     HWND chkAutosave=nullptr;
     HWND edtPassword=nullptr;
+    HWND btnNoteBg=nullptr, btnNoteText=nullptr, btnAccent=nullptr;
+    COLORREF noteBg, noteText, accent;
     AppConfig original;
 };
 static SettingsState* gSet=nullptr;
@@ -544,6 +566,23 @@ static HWND AddEdit(HWND p,int id,int x,int y,const wchar_t* value,bool password
     ApplyFont(c,gUiFont); return c;
 }
 
+
+static bool PickColor(HWND owner, COLORREF current, COLORREF& result) {
+    static COLORREF custom[16]{};
+    CHOOSECOLORW cc{};
+    cc.lStructSize=sizeof(cc);
+    cc.hwndOwner=owner;
+    cc.rgbResult=current;
+    cc.lpCustColors=custom;
+    cc.Flags=CC_FULLOPEN|CC_RGBINIT;
+    if (ChooseColorW(&cc)) { result=cc.rgbResult; return true; }
+    return false;
+}
+static void SetColorButtonText(HWND b, COLORREF c) {
+    wchar_t s[64]{};
+    swprintf_s(s,L"Màu  #%02X%02X%02X",GetRValue(c),GetGValue(c),GetBValue(c));
+    SetWindowTextW(b,s);
+}
 static void SettingsApplyFromUI(SettingsState* s) {
     gCfg.theme=(int)SendMessageW(s->cmbTheme,CB_GETCURSEL,0,0);
     gCfg.clockStyle=(int)SendMessageW(s->cmbClock,CB_GETCURSEL,0,0);
@@ -560,9 +599,11 @@ static void SettingsApplyFromUI(SettingsState* s) {
     if(np[0]) gCfg.password=np;
 
     CreateFonts();
+    RebuildNoteBrush();
     ApplyFont(gNote,gNoteFont);
     ApplyFontsToChildren(gMain);
     ApplyOpacity();
+    InvalidateRect(gNote,nullptr,TRUE);
 
     if(gCfg.showTop) SetWindowPos(gMain,HWND_TOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE);
     else SetWindowPos(gMain,HWND_NOTOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE);
@@ -627,16 +668,28 @@ static LRESULT CALLBACK SettingsProc(HWND h,UINT m,WPARAM wp,LPARAM lp) {
 
         AddLabel(h,L"12 - 32 px",270,398,100,25);
 
+        AddLabel(h,L"Màu nền Note:",45,430,120,25);
+        s->btnNoteBg=CreateWindowW(L"BUTTON",L"",WS_CHILD|WS_VISIBLE,175,426,145,30,h,(HMENU)ID_SET_NOTE_BG,GetModuleHandleW(nullptr),nullptr);
+        s->noteBg=gCfg.noteBg; SetColorButtonText(s->btnNoteBg,s->noteBg); ApplyFont(s->btnNoteBg,gUiFont);
+
+        AddLabel(h,L"Màu chữ Note:",335,430,120,25);
+        s->btnNoteText=CreateWindowW(L"BUTTON",L"",WS_CHILD|WS_VISIBLE,455,426,145,30,h,(HMENU)ID_SET_NOTE_TEXT,GetModuleHandleW(nullptr),nullptr);
+        s->noteText=gCfg.noteText; SetColorButtonText(s->btnNoteText,s->noteText); ApplyFont(s->btnNoteText,gUiFont);
+
+        AddLabel(h,L"Màu nhấn:",45,464,120,25);
+        s->btnAccent=CreateWindowW(L"BUTTON",L"",WS_CHILD|WS_VISIBLE,175,460,145,30,h,(HMENU)ID_SET_ACCENT,GetModuleHandleW(nullptr),nullptr);
+        s->accent=gCfg.accent; SetColorButtonText(s->btnAccent,s->accent); ApplyFont(s->btnAccent,gUiFont);
+
         // Password
-        AddLabel(h,L"Mật khẩu mới (để trống nếu không đổi):",45,488,330,25);
-        s->edtPassword=AddEdit(h,ID_SET_PASSWORD,380,484,L"",true);
+        AddLabel(h,L"Mật khẩu mới (để trống nếu không đổi):",45,505,330,25);
+        s->edtPassword=AddEdit(h,ID_SET_PASSWORD,380,501,L"",true);
 
         HWND save=CreateWindowW(L"BUTTON",L"LƯU THAY ĐỔI",
-            WS_CHILD|WS_VISIBLE|BS_DEFPUSHBUTTON,360,530,125,36,h,(HMENU)ID_SET_SAVE,GetModuleHandleW(nullptr),nullptr);
+            WS_CHILD|WS_VISIBLE|BS_DEFPUSHBUTTON,360,548,125,36,h,(HMENU)ID_SET_SAVE,GetModuleHandleW(nullptr),nullptr);
         ApplyFont(save,gUiFont);
 
         HWND cancel=CreateWindowW(L"BUTTON",L"HỦY",
-            WS_CHILD|WS_VISIBLE,495,530,100,36,h,(HMENU)ID_SET_CANCEL,GetModuleHandleW(nullptr),nullptr);
+            WS_CHILD|WS_VISIBLE,495,548,100,36,h,(HMENU)ID_SET_CANCEL,GetModuleHandleW(nullptr),nullptr);
         ApplyFont(cancel,gUiFont);
 
         // Set font on group boxes and all remaining children.
@@ -645,6 +698,18 @@ static LRESULT CALLBACK SettingsProc(HWND h,UINT m,WPARAM wp,LPARAM lp) {
     }
 
     case WM_COMMAND:
+        if(LOWORD(wp)==ID_SET_NOTE_BG) {
+            if(PickColor(h,s->noteBg,s->noteBg)) SetColorButtonText(s->btnNoteBg,s->noteBg);
+            return 0;
+        }
+        if(LOWORD(wp)==ID_SET_NOTE_TEXT) {
+            if(PickColor(h,s->noteText,s->noteText)) SetColorButtonText(s->btnNoteText,s->noteText);
+            return 0;
+        }
+        if(LOWORD(wp)==ID_SET_ACCENT) {
+            if(PickColor(h,s->accent,s->accent)) SetColorButtonText(s->btnAccent,s->accent);
+            return 0;
+        }
         if(LOWORD(wp)==ID_SET_SAVE) {
             SettingsApplyFromUI(s);
             DestroyWindow(h);
@@ -740,6 +805,7 @@ static LRESULT CALLBACK MainProc(HWND h,UINT m,WPARAM wp,LPARAM lp) {
         CreateWindowW(L"BUTTON",L"Khóa",WS_CHILD|WS_VISIBLE,535,420,105,34,h,(HMENU)IDC_LOCK,GetModuleHandleW(nullptr),nullptr);
 
         LoadNote();
+        RebuildNoteBrush();
         ApplyFontsToChildren(h);
         SetLocked(true);
         if(gCfg.showTop) SetWindowPos(gMain,HWND_TOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE);
@@ -778,6 +844,21 @@ static LRESULT CALLBACK MainProc(HWND h,UINT m,WPARAM wp,LPARAM lp) {
         }
         break;
 
+    case WM_CTLCOLOREDIT:
+        if((HWND)lp==gNote) {
+            HDC dc=(HDC)wp;
+            SetTextColor(dc,gCfg.noteText);
+            SetBkColor(dc,gCfg.noteBg);
+            return (LRESULT)gNoteBgBrush;
+        }
+        break;
+    case WM_CTLCOLORSTATIC: {
+        HDC dc=(HDC)wp;
+        SetBkMode(dc,TRANSPARENT);
+        SetTextColor(dc,TextColor());
+        return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
+    }
+
     case WM_TIMER:
         if(wp==IDT_CLOCK) {
             InvalidateRect(h,nullptr,TRUE);
@@ -790,22 +871,54 @@ static LRESULT CALLBACK MainProc(HWND h,UINT m,WPARAM wp,LPARAM lp) {
         RECT r{}; GetClientRect(h,&r);
         HBRUSH bg=CreateSolidBrush(BgColor()); FillRect(dc,&r,bg); DeleteObject(bg);
         SetBkMode(dc,TRANSPARENT);
-        SetTextColor(dc,TextColor());
+
+        // Header
+        HBRUSH header=CreateSolidBrush(gCfg.theme?RGB(39,42,47):RGB(236,241,247));
+        RECT hr{0,0,r.right,64}; FillRect(dc,&hr,header); DeleteObject(header);
 
         HFONT old=(HFONT)SelectObject(dc,gUiFont);
-        RECT titleR{18,15,450,50};
-        DrawTextW(dc,L"DESKTOP NOTE",-1,&titleR,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
-
+        SetTextColor(dc,TextColor());
+        DrawTextW(dc,L"DESKTOP NOTE",-1,&RECT{22,12,360,45},DT_LEFT|DT_VCENTER|DT_SINGLELINE);
         SYSTEMTIME st{}; GetLocalTime(&st);
         wchar_t date[128]{};
         swprintf_s(date,L"%s  •  %02d/%02d/%04d",WeekdayVN(st.wDayOfWeek).c_str(),st.wDay,st.wMonth,st.wYear);
         SetTextColor(dc,MutedColor());
-        RECT dateR{465,15,900,50};
-        DrawTextW(dc,date,-1,&dateR,DT_RIGHT|DT_VCENTER|DT_SINGLELINE);
+        DrawTextW(dc,date,-1,&RECT{570,12,920,45},DT_RIGHT|DT_VCENTER|DT_SINGLELINE);
 
-        // Clock panel
-        RECT cr{465,55,905,100};
-        PaintClock(dc,cr);
+        // Section frames
+        RECT calBox{18,78,445,r.bottom-75};
+        RECT clockBox{465,78,920,205};
+        RECT noteBox{465,220,920,r.bottom-75};
+
+        HPEN pen=CreatePen(PS_SOLID,1,gCfg.theme?RGB(80,85,92):RGB(205,211,218));
+        HGDIOBJ oldPen=SelectObject(dc,pen);
+        HBRUSH nullBrush=(HBRUSH)GetStockObject(NULL_BRUSH);
+        HGDIOBJ oldBrush=SelectObject(dc,nullBrush);
+        RoundRect(dc,calBox.left,calBox.top,calBox.right,calBox.bottom,12,12);
+        RoundRect(dc,clockBox.left,clockBox.top,clockBox.right,clockBox.bottom,12,12);
+        RoundRect(dc,noteBox.left,noteBox.top,noteBox.right,noteBox.bottom,12,12);
+        SelectObject(dc,oldBrush); SelectObject(dc,oldPen); DeleteObject(pen);
+
+        // Section titles
+        SetTextColor(dc,AccentColor());
+        DrawTextW(dc,L"LỊCH ÂM / DƯƠNG",-1,&RECT{34,84,250,110},DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+        DrawTextW(dc,L"ĐỒNG HỒ",-1,&RECT{482,84,650,110},DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+        DrawTextW(dc,L"GHI CHÚ",-1,&RECT{482,226,650,252},DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+
+        // Calendar legend
+        SetTextColor(dc,CalendarSolarColor());
+        DrawTextW(dc,L"● Dương",-1,&RECT{280,84,345,110},DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+        SetTextColor(dc,CalendarLunarColor());
+        DrawTextW(dc,L"● Âm",-1,&RECT{345,84,415,110},DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+
+        // Clock in framed area
+        PaintClock(dc,RECT{475,112,910,195});
+
+        // Note background and label line
+        HBRUSH nb=CreateSolidBrush(gCfg.noteBg);
+        RECT nr{476,258,909,r.bottom-86}; FillRect(dc,&nr,nb); DeleteObject(nb);
+        SetTextColor(dc,MutedColor());
+        DrawTextW(dc,L"Tự động lưu khi đang mở khóa",-1,&RECT{650,226,905,252},DT_RIGHT|DT_VCENTER|DT_SINGLELINE);
 
         SelectObject(dc,old);
         EndPaint(h,&ps);
@@ -814,12 +927,14 @@ static LRESULT CALLBACK MainProc(HWND h,UINT m,WPARAM wp,LPARAM lp) {
 
     case WM_SIZE: {
         int w=LOWORD(lp), hh=HIWORD(lp);
-        int leftW=std::max(300,(w-55)/2);
+        int leftW=std::max(380,(w-55)/2);
         int rightX=leftW+35;
-        int rightW=std::max(300,w-rightX-20);
-        MoveWindow(gCalendar,18,105,leftW-25,std::max(220,hh-170),TRUE);
-        MoveWindow(gNote,rightX,105,rightW,std::max(220,hh-170),TRUE);
-        MoveWindow(gStatus,18,hh-55,300,28,TRUE);
+        int rightW=std::max(380,w-rightX-20);
+        int contentH=std::max(220,hh-160);
+
+        MoveWindow(gCalendar,26,116,leftW-43,contentH-5,TRUE);
+        MoveWindow(gNote,rightX+11,258,rightW-22,std::max(150,hh-344),TRUE);
+        MoveWindow(gStatus,26,hh-52,300,28,TRUE);
         MoveWindow(GetDlgItem(h,IDC_LOCK),rightX,hh-60,105,34,TRUE);
         MoveWindow(GetDlgItem(h,IDC_UNLOCK),rightX+115,hh-60,105,34,TRUE);
         MoveWindow(GetDlgItem(h,IDC_SETTINGS),rightX+230,hh-60,105,34,TRUE);
@@ -839,6 +954,7 @@ static LRESULT CALLBACK MainProc(HWND h,UINT m,WPARAM wp,LPARAM lp) {
         KillTimer(h,IDT_CLOCK); KillTimer(h,IDT_AUTOSAVE);
         if(gNoteFont) DeleteObject(gNoteFont);
         if(gUiFont) DeleteObject(gUiFont);
+        if(gNoteBgBrush) DeleteObject(gNoteBgBrush);
         PostQuitMessage(0);
         return 0;
     }
@@ -863,7 +979,7 @@ int WINAPI wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int nCmdShow) {
         WS_EX_TOPMOST|WS_EX_LAYERED,
         L"DesktopNoteMain",L"Desktop Note",
         WS_OVERLAPPEDWINDOW,
-        100,100,940,520,nullptr,nullptr,hInst,nullptr);
+        100,100,960,600,nullptr,nullptr,hInst,nullptr);
 
     if(!h) return 1;
     ShowWindow(h,nCmdShow); UpdateWindow(h);
