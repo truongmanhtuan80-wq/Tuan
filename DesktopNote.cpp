@@ -164,7 +164,7 @@ static void LoadConfig() {
         if (p == std::wstring::npos) continue;
         std::wstring k = Trim(line.substr(0,p));
         std::wstring v = Trim(line.substr(p+1));
-        else if (k == L"showLunar") gCfg.showLunar = IntValue(v,1) != 0;
+        if (k == L"showLunar") gCfg.showLunar = IntValue(v,1) != 0;
         else if (k == L"showTop") gCfg.showTop = IntValue(v,1) != 0;
         else if (k == L"autosave") gCfg.autosave = IntValue(v,1) != 0;
         else if (k == L"noteFontSize") gCfg.noteFontSize = std::clamp(IntValue(v,18),12,30);
@@ -531,9 +531,9 @@ static void ShowNoteToolbar(bool show) {
     if(show) {
         RECT r{}; GetClientRect(gMain,&r);
         int gap=20;
-        int calW=std::max(330,(r.right-gap)/2-10);
+        int calW=std::max(330, static_cast<int>((r.right-gap)/2-10));
         int noteX=18+calW+gap;
-        int noteW=std::max(280,r.right-noteX-18);
+        int noteW=std::max(280, static_cast<int>(r.right-noteX-18));
         MoveWindow(gNoteToolbar,noteX+10,116,noteW-20,32,TRUE);
     }
 }
@@ -1120,7 +1120,7 @@ static LRESULT CALLBACK MainProc(HWND h,UINT m,WPARAM wp,LPARAM lp) {
 
         // Two framed areas: calendar and note.
         int gap=20;
-        int calW=std::max(330,(r.right-gap)/2-10);
+        int calW=std::max(330, static_cast<int>((r.right-gap)/2-10));
         int calBoxR=18+calW;
         int noteL=calBoxR+gap;
         RECT calBox{18,78,calBoxR,r.bottom-75};
@@ -1154,18 +1154,18 @@ static LRESULT CALLBACK MainProc(HWND h,UINT m,WPARAM wp,LPARAM lp) {
 
     case WM_SIZE: {
         int w=LOWORD(lp), hh=HIWORD(lp);
-        int contentH=std::max(220,hh-153);
+        int contentH=std::max(220, static_cast<int>(hh-153));
         int gap=20;
-        int calW=std::max(330,(w-gap)/2-10);
+        int calW=std::max(330, static_cast<int>((w-gap)/2-10));
         int calX=18;
         int calY=116;
-        int calH=std::max(180,hh-191);
+        int calH=std::max(180, static_cast<int>(hh-191));
         int noteX=calX+calW+gap;
-        int noteW=std::max(280,w-noteX-18);
+        int noteW=std::max(280, static_cast<int>(w-noteX-18));
 
         MoveWindow(gCalendar,calX+8,calY,calW-16,calH,TRUE);
         MoveWindow(gNoteToolbar,noteX+10,116,noteW-20,32,TRUE);
-        MoveWindow(gNote,noteX+10,154,noteW-20,std::max(100,hh-154-78),TRUE);
+        MoveWindow(gNote,noteX+10,154,noteW-20,std::max(100, static_cast<int>(hh-154-78)),TRUE);
 
         MoveWindow(gStatus,26,hh-52,300,28,TRUE);
         int bx=std::max(noteX, w-365);
