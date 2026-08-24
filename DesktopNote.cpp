@@ -20,16 +20,10 @@
 static HWND gMain = nullptr;
 static HWND gNote = nullptr;
 static HWND gStatus = nullptr;
-static HFONT gFont = nullptr;
 static bool gUnlocked = false;
 static std::wstring gNotePath;
 
 static const wchar_t* DEFAULT_PASSWORD = L"1234";
-
-static void ApplyFont(HWND h) {
-    if (!h || !gFont) return;
-    SendMessageW(h, WM_SETFONT, reinterpret_cast<WPARAM>(gFont), TRUE);
-}
 
 static std::wstring AppDir() {
     wchar_t p[MAX_PATH]{};
@@ -89,8 +83,6 @@ struct PasswordPromptState {
     bool accepted = false;
 };
 
-static HFONT gPasswordFont = nullptr;
-
 static LRESULT CALLBACK PasswordWndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     PasswordPromptState* s =
         reinterpret_cast<PasswordPromptState*>(GetWindowLongPtrW(h, GWLP_USERDATA));
@@ -118,19 +110,10 @@ static LRESULT CALLBACK PasswordWndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             145, 92, 85, 30, h, (HMENU)ID_PWD_OK,
             GetModuleHandleW(nullptr), nullptr);
 
-        CreateWindowW(L"BUTTON", L"Huy",
+        CreateWindowW(L"BUTTON", L"Hủy",
             WS_CHILD | WS_VISIBLE,
             235, 92, 85, 30, h, (HMENU)ID_PWD_CANCEL,
             GetModuleHandleW(nullptr), nullptr);
-
-        gPasswordFont = CreateFontW(
-            -16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
-            L"Segoe UI");
-
-        for (HWND child = GetWindow(h, GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT))
-            SendMessageW(child, WM_SETFONT, reinterpret_cast<WPARAM>(gPasswordFont), TRUE);
 
         SetFocus(s->edit);
         return 0;
@@ -156,10 +139,6 @@ static LRESULT CALLBACK PasswordWndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         }
         break;
     case WM_CLOSE:
-        if (gPasswordFont) {
-            DeleteObject(gPasswordFont);
-            gPasswordFont = nullptr;
-        }
         DestroyWindow(h);
         return 0;
     }
@@ -223,13 +202,6 @@ static LRESULT CALLBACK MainWndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         gMain = h;
         gNotePath = AppDir() + L"\\DesktopNote.txt";
 
-        // Explicit Unicode-capable Windows UI font.
-        gFont = CreateFontW(
-            -18, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
-            L"Segoe UI");
-
         CreateWindowW(L"STATIC", L"LỊCH ÂM / DƯƠNG",
             WS_CHILD | WS_VISIBLE, 20, 18, 250, 25, h, nullptr,
             GetModuleHandleW(nullptr), nullptr);
@@ -254,7 +226,7 @@ static LRESULT CALLBACK MainWndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             GetModuleHandleW(nullptr), nullptr);
 
         gStatus = CreateWindowW(
-            L"STATIC", L"DANG KHOA",
+            L"STATIC", L"LOCKED - Đang khóa",
             WS_CHILD | WS_VISIBLE, 20, 380, 260, 25, h, nullptr,
             GetModuleHandleW(nullptr), nullptr);
 
@@ -265,10 +237,6 @@ static LRESULT CALLBACK MainWndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         CreateWindowW(L"BUTTON", L"Cài đặt",
             WS_CHILD | WS_VISIBLE, 585, 375, 105, 32, h,
             (HMENU)ID_SETTINGS, GetModuleHandleW(nullptr), nullptr);
-
-        // Apply Segoe UI to all controls so Vietnamese diacritics render correctly.
-        for (HWND child = GetWindow(h, GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT))
-            ApplyFont(child);
 
         LoadNote();
         SetLocked(true);
@@ -335,10 +303,6 @@ static LRESULT CALLBACK MainWndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
 
     case WM_DESTROY:
         KillTimer(h, ID_TIMER);
-        if (gFont) {
-            DeleteObject(gFont);
-            gFont = nullptr;
-        }
         PostQuitMessage(0);
         return 0;
     }
