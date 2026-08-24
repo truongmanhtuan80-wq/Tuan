@@ -1,6 +1,7 @@
 #define UNICODE
 #define _UNICODE
 #define NOMINMAX
+#define _USE_MATH_DEFINES
 #include <windows.h>
 #include <commctrl.h>
 #include <string>
@@ -144,8 +145,13 @@ static void LoadConfig() {
 static void SaveNote() {
     if (!gNote) return;
     int n = GetWindowTextLengthW(gNote);
-    std::wstring s(static_cast<size_t>(n), L'\0');
-    if (n > 0) GetWindowTextW(gNote, s.data(), n + 1);
+    std::wstring s(static_cast<size_t>(n) + 1, L'\0');
+    if (n > 0) {
+        GetWindowTextW(gNote, s.data(), n + 1);
+        s.resize(static_cast<size_t>(n));
+    } else {
+        s.clear();
+    }
     WriteText(gNoteFile, s);
 }
 
