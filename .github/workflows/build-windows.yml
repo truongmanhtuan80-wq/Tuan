@@ -1,4 +1,4 @@
-name: Build Desktop Note Windows x64
+name: Build Desktop Note Windows
 
 on:
   workflow_dispatch:
@@ -8,7 +8,6 @@ on:
 jobs:
   build:
     runs-on: windows-latest
-
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -22,7 +21,7 @@ jobs:
         shell: cmd
         run: |
           chcp 65001 >nul
-          cl.exe /nologo /O2 /EHsc /std:c++17 /utf-8 DesktopNote.cpp /Fe:DesktopNote.exe user32.lib gdi32.lib comctl32.lib comdlg32.lib
+          cl.exe /nologo /O2 /EHsc /std:c++17 /utf-8 DesktopNote.cpp /Fe:DesktopNote.exe user32.lib gdi32.lib comctl32.lib comdlg32.lib ole32.lib
           if not exist DesktopNote.exe exit /b 1
 
       - name: Upload DesktopNote.exe
