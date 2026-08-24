@@ -42,6 +42,8 @@
 #define ID_SET_PASSWORD 3007
 #define ID_SET_SAVE     3008
 #define ID_SET_CANCEL   3009
+#define ID_SET_TOP      3010
+#define ID_SET_AUTOSAVE 3011
 
 static HWND gMain = nullptr;
 static HWND gNote = nullptr;
@@ -60,14 +62,18 @@ static std::wstring gConfigFile;
 struct AppConfig {
     bool showSeconds = true;
     bool showLunar = true;
+    bool showTop = true;
+    bool autosave = true;
     int noteFontSize = 18;
     int opacity = 96;
-    int theme = 0;       // 0 light, 1 dark
-    int clockStyle = 0;  // 0 digital, 1 large
+    int theme = 0;
+    int clockStyle = 0;
     std::wstring password = L"1234";
 };
 
 static AppConfig gCfg;
+// V2 settings state
+
 
 static COLORREF BgColor() { return gCfg.theme ? RGB(32,34,37) : RGB(247,247,245); }
 static COLORREF PanelColor() { return gCfg.theme ? RGB(45,47,51) : RGB(255,255,255); }
@@ -108,6 +114,8 @@ static void SaveConfig() {
     if (!f) return;
     f << L"showSeconds=" << (gCfg.showSeconds ? 1 : 0) << L"\n";
     f << L"showLunar=" << (gCfg.showLunar ? 1 : 0) << L"\n";
+    f << L"showTop=" << (gCfg.showTop ? 1 : 0) << L"\n";
+    f << L"autosave=" << (gCfg.autosave ? 1 : 0) << L"\n";
     f << L"noteFontSize=" << gCfg.noteFontSize << L"\n";
     f << L"opacity=" << gCfg.opacity << L"\n";
     f << L"theme=" << gCfg.theme << L"\n";
@@ -134,6 +142,8 @@ static void LoadConfig() {
         std::wstring v = Trim(line.substr(p+1));
         if (k == L"showSeconds") gCfg.showSeconds = IntValue(v,1) != 0;
         else if (k == L"showLunar") gCfg.showLunar = IntValue(v,1) != 0;
+        else if (k == L"showTop") gCfg.showTop = IntValue(v,1) != 0;
+        else if (k == L"autosave") gCfg.autosave = IntValue(v,1) != 0;
         else if (k == L"noteFontSize") gCfg.noteFontSize = std::clamp(IntValue(v,18),12,30);
         else if (k == L"opacity") gCfg.opacity = std::clamp(IntValue(v,96),55,100);
         else if (k == L"theme") gCfg.theme = std::clamp(IntValue(v,0),0,1);
@@ -501,18 +511,66 @@ static bool AskPassword(HWND owner) {
     return s.ok;
 }
 
+
 struct SettingsState {
     HWND wnd=nullptr;
-    HWND theme=nullptr, seconds=nullptr, lunar=nullptr, font=nullptr, opacity=nullptr, clock=nullptr;
-    HWND oldpass=nullptr, newpass=nullptr;
+    HWND tab=nullptr;
+    HWND chkSeconds=nullptr, chkLunar=nullptr, chkTop=nullptr;
+    HWND cmbTheme=nullptr, cmbClock=nullptr;
+    HWND edtFont=nullptr, edtOpacity=nullptr;
+    HWND chkAutosave=nullptr;
+    HWND edtPassword=nullptr;
     AppConfig original;
 };
-
 static SettingsState* gSet=nullptr;
 
-static void ApplyThemeToControl(HWND c) {
-    if(!c) return;
+static void AddLabel(HWND p, const wchar_t* s, int x, int y, int w, int h) {
+    HWND c=CreateWindowW(L"STATIC",s,WS_CHILD|WS_VISIBLE,x,y,w,h,p,nullptr,GetModuleHandleW(nullptr),nullptr);
     ApplyFont(c,gUiFont);
+}
+static HWND AddCheck(HWND p,const wchar_t* s,int id,int x,int y,bool checked) {
+    HWND c=CreateWindowW(L"BUTTON",s,WS_CHILD|WS_VISIBLE|BS_AUTOCHECKBOX,x,y,300,28,p,(HMENU)id,GetModuleHandleW(nullptr),nullptr);
+    SendMessageW(c,BM_SETCHECK,checked?BST_CHECKED:BST_UNCHECKED,0);
+    ApplyFont(c,gUiFont); return c;
+}
+static HWND AddCombo(HWND p,int id,int x,int y,const wchar_t** items,int count,int selected) {
+    HWND c=CreateWindowW(L"COMBOBOX",L"",WS_CHILD|WS_VISIBLE|CBS_DROPDOWNLIST,x,y,210,30,p,(HMENU)id,GetModuleHandleW(nullptr),nullptr);
+    for(int i=0;i<count;++i) SendMessageW(c,CB_ADDSTRING,0,(LPARAM)items[i]);
+    SendMessageW(c,CB_SETCURSEL,selected,0); ApplyFont(c,gUiFont); return c;
+}
+static HWND AddEdit(HWND p,int id,int x,int y,const wchar_t* value,bool password=false) {
+    DWORD st=WS_CHILD|WS_VISIBLE|ES_AUTOHSCROLL;
+    HWND c=CreateWindowExW(WS_EX_CLIENTEDGE,L"EDIT",value,st|(password?ES_PASSWORD:0),x,y,100,28,p,(HMENU)id,GetModuleHandleW(nullptr),nullptr);
+    ApplyFont(c,gUiFont); return c;
+}
+
+static void SettingsApplyFromUI(SettingsState* s) {
+    gCfg.theme=(int)SendMessageW(s->cmbTheme,CB_GETCURSEL,0,0);
+    gCfg.clockStyle=(int)SendMessageW(s->cmbClock,CB_GETCURSEL,0,0);
+    gCfg.showSeconds=SendMessageW(s->chkSeconds,BM_GETCHECK,0,0)==BST_CHECKED;
+    gCfg.showLunar=SendMessageW(s->chkLunar,BM_GETCHECK,0,0)==BST_CHECKED;
+    gCfg.showTop=SendMessageW(s->chkTop,BM_GETCHECK,0,0)==BST_CHECKED;
+    gCfg.autosave=SendMessageW(s->chkAutosave,BM_GETCHECK,0,0)==BST_CHECKED;
+
+    wchar_t b[64]{};
+    GetWindowTextW(s->edtFont,b,64); gCfg.noteFontSize=std::clamp(IntValue(b,18),12,32);
+    GetWindowTextW(s->edtOpacity,b,64); gCfg.opacity=std::clamp(IntValue(b,96),55,100);
+
+    wchar_t np[256]{}; GetWindowTextW(s->edtPassword,np,256);
+    if(np[0]) gCfg.password=np;
+
+    CreateFonts();
+    ApplyFont(gNote,gNoteFont);
+    ApplyFontsToChildren(gMain);
+    ApplyOpacity();
+
+    if(gCfg.showTop) SetWindowPos(gMain,HWND_TOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE);
+    else SetWindowPos(gMain,HWND_NOTOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE);
+
+    SaveConfig();
+    PaintHeader(gMain);
+    InvalidateRect(gMain,nullptr,TRUE);
+    InvalidateRect(gCalendar,nullptr,TRUE);
 }
 
 static LRESULT CALLBACK SettingsProc(HWND h,UINT m,WPARAM wp,LPARAM lp) {
@@ -523,73 +581,88 @@ static LRESULT CALLBACK SettingsProc(HWND h,UINT m,WPARAM wp,LPARAM lp) {
     }
     switch(m) {
     case WM_CREATE: {
-        s->theme=CreateWindowW(L"COMBOBOX",L"",WS_CHILD|WS_VISIBLE|CBS_DROPDOWNLIST,175,18,180,30,h,(HMENU)ID_SET_THEME,GetModuleHandleW(nullptr),nullptr);
-        SendMessageW(s->theme,CB_ADDSTRING,0,(LPARAM)L"Sáng");
-        SendMessageW(s->theme,CB_ADDSTRING,0,(LPARAM)L"Tối");
-        SendMessageW(s->theme,CB_SETCURSEL,gCfg.theme,0);
+        SetWindowTextW(h,L"Desktop Note - Cài đặt");
 
-        s->seconds=CreateWindowW(L"BUTTON",L"Hiển thị giây",WS_CHILD|WS_VISIBLE|BS_AUTOCHECKBOX,20,60,180,28,h,(HMENU)ID_SET_SECONDS,GetModuleHandleW(nullptr),nullptr);
-        SendMessageW(s->seconds,BM_SETCHECK,gCfg.showSeconds?BST_CHECKED:BST_UNCHECKED,0);
+        // Header
+        HWND hdr=CreateWindowW(L"STATIC",L"CÀI ĐẶT DESKTOP NOTE",
+            WS_CHILD|WS_VISIBLE|SS_CENTER,20,12,600,32,h,nullptr,GetModuleHandleW(nullptr),nullptr);
+        ApplyFont(hdr,gUiFont);
 
-        s->lunar=CreateWindowW(L"BUTTON",L"Hiển thị lịch âm",WS_CHILD|WS_VISIBLE|BS_AUTOCHECKBOX,20,92,180,28,h,(HMENU)ID_SET_LUNAR,GetModuleHandleW(nullptr),nullptr);
-        SendMessageW(s->lunar,BM_SETCHECK,gCfg.showLunar?BST_CHECKED:BST_UNCHECKED,0);
+        // Group 1 - interface
+        HWND g1=CreateWindowW(L"BUTTON",L"1. Giao diện",
+            WS_CHILD|WS_VISIBLE|BS_GROUPBOX,20,52,600,150,h,nullptr,GetModuleHandleW(nullptr),nullptr);
+        ApplyFont(g1,gUiFont);
 
-        CreateWindowW(L"STATIC",L"Cỡ chữ Note:",WS_CHILD|WS_VISIBLE,20,128,140,25,h,nullptr,GetModuleHandleW(nullptr),nullptr);
-        s->font=CreateWindowExW(WS_EX_CLIENTEDGE,L"EDIT",L"",WS_CHILD|WS_VISIBLE|ES_NUMBER,175,124,80,28,h,(HMENU)ID_SET_FONT,GetModuleHandleW(nullptr),nullptr);
-        wchar_t b[32]{}; swprintf_s(b,L"%d",gCfg.noteFontSize); SetWindowTextW(s->font,b);
+        AddLabel(h,L"Chủ đề:",45,82,100,25);
+        const wchar_t* themes[]={L"Sáng",L"Tối"};
+        s->cmbTheme=AddCombo(h,ID_SET_THEME,145,78,themes,2,gCfg.theme);
 
-        CreateWindowW(L"STATIC",L"Độ trong suốt:",WS_CHILD|WS_VISIBLE,20,164,140,25,h,nullptr,GetModuleHandleW(nullptr),nullptr);
-        s->opacity=CreateWindowW(L"EDIT",L"",WS_CHILD|WS_VISIBLE|ES_NUMBER,175,160,80,28,h,(HMENU)ID_SET_OPACITY,GetModuleHandleW(nullptr),nullptr);
-        swprintf_s(b,L"%d",gCfg.opacity); SetWindowTextW(s->opacity,b);
+        AddLabel(h,L"Độ trong suốt (%):",385,82,130,25);
+        wchar_t b[32]{}; swprintf_s(b,L"%d",gCfg.opacity);
+        s->edtOpacity=AddEdit(h,ID_SET_OPACITY,520,78,b);
 
-        CreateWindowW(L"STATIC",L"Kiểu đồng hồ:",WS_CHILD|WS_VISIBLE,20,200,140,25,h,nullptr,GetModuleHandleW(nullptr),nullptr);
-        s->clock=CreateWindowW(L"COMBOBOX",L"",WS_CHILD|WS_VISIBLE|CBS_DROPDOWNLIST,175,196,180,30,h,(HMENU)ID_SET_CLOCK,GetModuleHandleW(nullptr),nullptr);
-        SendMessageW(s->clock,CB_ADDSTRING,0,(LPARAM)L"Tiêu chuẩn");
-        SendMessageW(s->clock,CB_ADDSTRING,0,(LPARAM)L"Lớn");
-        SendMessageW(s->clock,CB_SETCURSEL,gCfg.clockStyle,0);
+        s->chkTop=AddCheck(h,L"Luôn hiển thị trên cùng",ID_SET_TOP,45,120,gCfg.showTop);
+        s->chkAutosave=AddCheck(h,L"Tự động lưu ghi chú",ID_SET_AUTOSAVE,310,120,gCfg.autosave);
 
-        CreateWindowW(L"STATIC",L"Đổi mật khẩu (không bắt buộc)",WS_CHILD|WS_VISIBLE,20,235,300,25,h,nullptr,GetModuleHandleW(nullptr),nullptr);
-        CreateWindowW(L"STATIC",L"Mật khẩu mới:",WS_CHILD|WS_VISIBLE,20,267,140,25,h,nullptr,GetModuleHandleW(nullptr),nullptr);
-        s->newpass=CreateWindowExW(WS_EX_CLIENTEDGE,L"EDIT",L"",WS_CHILD|WS_VISIBLE|ES_PASSWORD,175,263,180,28,h,(HMENU)ID_SET_PASSWORD,GetModuleHandleW(nullptr),nullptr);
+        // Group 2 - clock/calendar
+        HWND g2=CreateWindowW(L"BUTTON",L"2. Lịch & Đồng hồ",
+            WS_CHILD|WS_VISIBLE|BS_GROUPBOX,20,212,600,145,h,nullptr,GetModuleHandleW(nullptr),nullptr);
+        ApplyFont(g2,gUiFont);
 
-        CreateWindowW(L"BUTTON",L"Lưu",WS_CHILD|WS_VISIBLE|BS_DEFPUSHBUTTON,175,310,85,32,h,(HMENU)ID_SET_SAVE,GetModuleHandleW(nullptr),nullptr);
-        CreateWindowW(L"BUTTON",L"Hủy",WS_CHILD|WS_VISIBLE,270,310,85,32,h,(HMENU)ID_SET_CANCEL,GetModuleHandleW(nullptr),nullptr);
+        s->chkSeconds=AddCheck(h,L"Hiển thị giây",ID_SET_SECONDS,45,242,gCfg.showSeconds);
+        s->chkLunar=AddCheck(h,L"Hiển thị lịch âm",ID_SET_LUNAR,45,274,gCfg.showLunar);
 
-        for(HWND c=GetWindow(h,GW_CHILD);c;c=GetWindow(c,GW_HWNDNEXT)) ApplyThemeToControl(c);
+        AddLabel(h,L"Kiểu đồng hồ:",310,242,120,25);
+        const wchar_t* clocks[]={L"Tiêu chuẩn",L"Lớn"};
+        s->cmbClock=AddCombo(h,ID_SET_CLOCK,430,238,clocks,2,gCfg.clockStyle);
+
+        // Group 3 - note
+        HWND g3=CreateWindowW(L"BUTTON",L"3. Giao diện ô Note",
+            WS_CHILD|WS_VISIBLE|BS_GROUPBOX,20,367,600,105,h,nullptr,GetModuleHandleW(nullptr),nullptr);
+        ApplyFont(g3,gUiFont);
+
+        AddLabel(h,L"Cỡ chữ Note:",45,398,110,25);
+        swprintf_s(b,L"%d",gCfg.noteFontSize);
+        s->edtFont=AddEdit(h,ID_SET_FONT,155,394,b);
+
+        AddLabel(h,L"12 - 32 px",270,398,100,25);
+
+        // Password
+        AddLabel(h,L"Mật khẩu mới (để trống nếu không đổi):",45,488,330,25);
+        s->edtPassword=AddEdit(h,ID_SET_PASSWORD,380,484,L"",true);
+
+        HWND save=CreateWindowW(L"BUTTON",L"LƯU THAY ĐỔI",
+            WS_CHILD|WS_VISIBLE|BS_DEFPUSHBUTTON,360,530,125,36,h,(HMENU)ID_SET_SAVE,GetModuleHandleW(nullptr),nullptr);
+        ApplyFont(save,gUiFont);
+
+        HWND cancel=CreateWindowW(L"BUTTON",L"HỦY",
+            WS_CHILD|WS_VISIBLE,495,530,100,36,h,(HMENU)ID_SET_CANCEL,GetModuleHandleW(nullptr),nullptr);
+        ApplyFont(cancel,gUiFont);
+
+        // Set font on group boxes and all remaining children.
+        for(HWND c=GetWindow(h,GW_CHILD);c;c=GetWindow(c,GW_HWNDNEXT)) ApplyFont(c,gUiFont);
         return 0;
     }
+
     case WM_COMMAND:
         if(LOWORD(wp)==ID_SET_SAVE) {
-            int theme=(int)SendMessageW(s->theme,CB_GETCURSEL,0,0);
-            int clock=(int)SendMessageW(s->clock,CB_GETCURSEL,0,0);
-            wchar_t b[64]{};
-            GetWindowTextW(s->font,b,64); int fs=std::clamp(IntValue(b,18),12,30);
-            GetWindowTextW(s->opacity,b,64); int op=std::clamp(IntValue(b,96),55,100);
-            wchar_t np[256]{}; GetWindowTextW(s->newpass,np,256);
-
-            gCfg.theme=theme<0?0:theme;
-            gCfg.clockStyle=clock<0?0:clock;
-            gCfg.showSeconds=SendMessageW(s->seconds,BM_GETCHECK,0,0)==BST_CHECKED;
-            gCfg.showLunar=SendMessageW(s->lunar,BM_GETCHECK,0,0)==BST_CHECKED;
-            gCfg.noteFontSize=fs;
-            gCfg.opacity=op;
-            if(np[0]) gCfg.password=np;
-
-            CreateFonts();
-            ApplyFont(gNote,gNoteFont);
-            ApplyFontsToChildren(gMain);
-            ApplyOpacity();
-            SaveConfig();
-            PaintHeader(gMain);
+            SettingsApplyFromUI(s);
             DestroyWindow(h);
-            gSettingsOpen=false;
-            gSet=nullptr;
+            gSettingsOpen=false; gSet=nullptr;
             return 0;
         }
-        if(LOWORD(wp)==ID_SET_CANCEL) { DestroyWindow(h); gSettingsOpen=false; gSet=nullptr; return 0; }
+        if(LOWORD(wp)==ID_SET_CANCEL) {
+            DestroyWindow(h);
+            gSettingsOpen=false; gSet=nullptr;
+            return 0;
+        }
         break;
-    case WM_CLOSE: DestroyWindow(h); gSettingsOpen=false; gSet=nullptr; return 0;
-    case WM_NCDESTROY: gSet=nullptr; break;
+
+    case WM_CLOSE:
+        DestroyWindow(h); gSettingsOpen=false; gSet=nullptr; return 0;
+
+    case WM_NCDESTROY:
+        delete s; gSet=nullptr; break;
     }
     return DefWindowProcW(h,m,wp,lp);
 }
@@ -599,24 +672,46 @@ static void OpenSettings(HWND owner) {
         if(!AskPassword(owner)) return;
         SetLocked(false);
     }
-    if(gSettingsOpen && gSet && IsWindow(gSet->wnd)) { SetForegroundWindow(gSet->wnd); return; }
+    if(gSettingsOpen && gSet && IsWindow(gSet->wnd)) {
+        SetForegroundWindow(gSet->wnd);
+        return;
+    }
 
     static bool reg=false;
     if(!reg) {
-        WNDCLASSW wc{}; wc.lpfnWndProc=SettingsProc; wc.hInstance=GetModuleHandleW(nullptr);
-        wc.lpszClassName=L"DesktopNoteSettings"; wc.hCursor=LoadCursorW(nullptr,IDC_ARROW);
-        wc.hbrBackground=(HBRUSH)(COLOR_WINDOW+1); RegisterClassW(&wc); reg=true;
+        WNDCLASSW wc{};
+        wc.lpfnWndProc=SettingsProc;
+        wc.hInstance=GetModuleHandleW(nullptr);
+        wc.lpszClassName=L"DesktopNoteSettingsComplete";
+        wc.hCursor=LoadCursorW(nullptr,IDC_ARROW);
+        wc.hbrBackground=(HBRUSH)(COLOR_WINDOW+1);
+        RegisterClassW(&wc);
+        reg=true;
     }
+
     SettingsState* s=new SettingsState();
     s->original=gCfg;
-    gSet=s; gSettingsOpen=true;
-    HWND d=CreateWindowExW(WS_EX_DLGMODALFRAME,L"DesktopNoteSettings",L"Desktop Note - Cài đặt",
-        WS_CAPTION|WS_SYSMENU,0,0,390,390,owner,nullptr,GetModuleHandleW(nullptr),s);
+    gSet=s;
+    gSettingsOpen=true;
+
+    HWND d=CreateWindowExW(
+        WS_EX_DLGMODALFRAME,
+        L"DesktopNoteSettingsComplete",
+        L"Desktop Note - Cài đặt",
+        WS_CAPTION|WS_SYSMENU,
+        0,0,660,610,
+        owner,nullptr,GetModuleHandleW(nullptr),s);
+
     s->wnd=d;
-    RECT dr{},orx{}; GetWindowRect(d,&dr); GetWindowRect(owner,&orx);
-    SetWindowPos(d,HWND_TOP,orx.left+(orx.right-orx.left-dr.right+dr.left)/2,
-        orx.top+(orx.bottom-orx.top-dr.bottom+dr.top)/2,0,0,SWP_NOSIZE);
-    ShowWindow(d,SW_SHOW); UpdateWindow(d);
+
+    RECT dr{},orx{};
+    GetWindowRect(d,&dr); GetWindowRect(owner,&orx);
+    int x=orx.left+((orx.right-orx.left)-(dr.right-dr.left))/2;
+    int y=orx.top+((orx.bottom-orx.top)-(dr.bottom-dr.top))/2;
+    SetWindowPos(d,HWND_TOP,x,y,0,0,SWP_NOSIZE);
+
+    ShowWindow(d,SW_SHOW);
+    UpdateWindow(d);
 }
 
 static LRESULT CALLBACK MainProc(HWND h,UINT m,WPARAM wp,LPARAM lp) {
@@ -647,6 +742,7 @@ static LRESULT CALLBACK MainProc(HWND h,UINT m,WPARAM wp,LPARAM lp) {
         LoadNote();
         ApplyFontsToChildren(h);
         SetLocked(true);
+        if(gCfg.showTop) SetWindowPos(gMain,HWND_TOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE);
         ApplyOpacity();
         SetTimer(h,IDT_CLOCK,1000,nullptr);
         SetTimer(h,IDT_AUTOSAVE,3000,nullptr);
@@ -686,7 +782,7 @@ static LRESULT CALLBACK MainProc(HWND h,UINT m,WPARAM wp,LPARAM lp) {
         if(wp==IDT_CLOCK) {
             InvalidateRect(h,nullptr,TRUE);
             InvalidateRect(gCalendar,nullptr,TRUE);
-        } else if(wp==IDT_AUTOSAVE && gUnlocked) SaveNote();
+        } else if(wp==IDT_AUTOSAVE && gUnlocked && gCfg.autosave) SaveNote();
         return 0;
 
     case WM_PAINT: {
