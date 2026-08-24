@@ -16,11 +16,19 @@
 #define ID_PWD_EDIT 2001
 #define ID_PWD_OK   2002
 #define ID_PWD_CANCEL 2003
+#define ID_SET_SECONDS 3001
+#define ID_SET_LUNAR 3002
+#define ID_SET_FONT 3003
+#define ID_SET_SAVE 3004
+#define ID_SET_CANCEL 3005
 
 static HWND gMain = nullptr;
 static HWND gNote = nullptr;
 static HWND gStatus = nullptr;
 static bool gUnlocked = false;
+static bool gShowSeconds = true;
+static bool gShowLunar = true;
+static int gNoteFontSize = 18;
 static std::wstring gNotePath;
 
 static const wchar_t* DEFAULT_PASSWORD = L"1234";
@@ -196,6 +204,142 @@ static void SetLocked(bool locked) {
     UpdateStatus();
 }
 
+
+static HWND gSettings = nullptr;
+
+static void ApplyNoteFont() {
+    if (!gNote) return;
+    HFONT f = CreateFontW(
+        -gNoteFontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    SendMessageW(gNote, WM_SETFONT, reinterpret_cast<WPARAM>(f), TRUE);
+    // Keep the font handle alive by assigning it to the window property.
+    HFONT old = reinterpret_cast<HFONT>(GetPropW(gNote, L"DesktopNoteFont"));
+    if (old) DeleteObject(old);
+    SetPropW(gNote, L"DesktopNoteFont", f);
+}
+
+static LRESULT CALLBACK SettingsWndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
+    switch (m) {
+    case WM_CREATE: {
+        CreateWindowW(L"STATIC", L"GIAO DIỆN", WS_CHILD|WS_VISIBLE,
+                      20, 15, 250, 25, h, nullptr, GetModuleHandleW(nullptr), nullptr);
+
+        HWND sec = CreateWindowW(L"BUTTON", L"Hiển thị giây trên đồng hồ",
+                      WS_CHILD|WS_VISIBLE|BS_AUTOCHECKBOX,
+                      20, 50, 280, 28, h, (HMENU)ID_SET_SECONDS,
+                      GetModuleHandleW(nullptr), nullptr);
+        SendMessageW(sec, BM_SETCHECK, gShowSeconds ? BST_CHECKED : BST_UNCHECKED, 0);
+
+        HWND lunar = CreateWindowW(L"BUTTON", L"Hiển thị lịch âm",
+                      WS_CHILD|WS_VISIBLE|BS_AUTOCHECKBOX,
+                      20, 85, 280, 28, h, (HMENU)ID_SET_LUNAR,
+                      GetModuleHandleW(nullptr), nullptr);
+        SendMessageW(lunar, BM_SETCHECK, gShowLunar ? BST_CHECKED : BST_UNCHECKED, 0);
+
+        CreateWindowW(L"STATIC", L"Cỡ chữ Note (12 - 30):",
+                      WS_CHILD|WS_VISIBLE, 20, 125, 180, 25, h, nullptr,
+                      GetModuleHandleW(nullptr), nullptr);
+
+        wchar_t sizeBuf[16]{};
+        swprintf_s(sizeBuf, L"%d", gNoteFontSize);
+        CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", sizeBuf,
+                      WS_CHILD|WS_VISIBLE|ES_NUMBER|ES_AUTOHSCROLL,
+                      210, 122, 70, 28, h, (HMENU)ID_SET_FONT,
+                      GetModuleHandleW(nullptr), nullptr);
+
+        CreateWindowW(L"BUTTON", L"Lưu",
+                      WS_CHILD|WS_VISIBLE|BS_DEFPUSHBUTTON,
+                      145, 175, 90, 32, h, (HMENU)ID_SET_SAVE,
+                      GetModuleHandleW(nullptr), nullptr);
+
+        CreateWindowW(L"BUTTON", L"Hủy",
+                      WS_CHILD|WS_VISIBLE,
+                      245, 175, 90, 32, h, (HMENU)ID_SET_CANCEL,
+                      GetModuleHandleW(nullptr), nullptr);
+
+        // Apply Segoe UI to all controls.
+        for (HWND child = GetWindow(h, GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT))
+            SendMessageW(child, WM_SETFONT, reinterpret_cast<WPARAM>(gFont), TRUE);
+        return 0;
+    }
+    case WM_COMMAND:
+        if (LOWORD(wp) == ID_SET_SAVE) {
+            gShowSeconds = SendMessageW(GetDlgItem(h, ID_SET_SECONDS), BM_GETCHECK, 0, 0) == BST_CHECKED;
+            gShowLunar = SendMessageW(GetDlgItem(h, ID_SET_LUNAR), BM_GETCHECK, 0, 0) == BST_CHECKED;
+
+            wchar_t buf[32]{};
+            GetWindowTextW(GetDlgItem(h, ID_SET_FONT), buf, 32);
+            int v = _wtoi(buf);
+            if (v < 12 || v > 30) {
+                MessageBoxW(h, L"Cỡ chữ phải từ 12 đến 30.", L"Desktop Note",
+                            MB_OK | MB_ICONWARNING);
+                return 0;
+            }
+            gNoteFontSize = v;
+            ApplyNoteFont();
+            DestroyWindow(h);
+            gSettings = nullptr;
+            return 0;
+        }
+        if (LOWORD(wp) == ID_SET_CANCEL) {
+            DestroyWindow(h);
+            gSettings = nullptr;
+            return 0;
+        }
+        break;
+    case WM_CLOSE:
+        DestroyWindow(h);
+        gSettings = nullptr;
+        return 0;
+    case WM_NCDESTROY:
+        gSettings = nullptr;
+        break;
+    }
+    return DefWindowProcW(h, m, wp, lp);
+}
+
+static void OpenSettings(HWND owner) {
+    if (!gUnlocked) {
+        if (!AskPassword(owner)) return;
+        SetLocked(false);
+    }
+    if (gSettings && IsWindow(gSettings)) {
+        SetForegroundWindow(gSettings);
+        return;
+    }
+
+    static bool registered = false;
+    if (!registered) {
+        WNDCLASSW wc{};
+        wc.lpfnWndProc = SettingsWndProc;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpszClassName = L"DesktopNoteSettingsWindow";
+        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+        RegisterClassW(&wc);
+        registered = true;
+    }
+
+    gSettings = CreateWindowExW(
+        WS_EX_DLGMODALFRAME,
+        L"DesktopNoteSettingsWindow",
+        L"Desktop Note - Cài đặt",
+        WS_CAPTION | WS_SYSMENU,
+        0, 0, 370, 255,
+        owner, nullptr, GetModuleHandleW(nullptr), nullptr);
+
+    RECT r{}, o{};
+    GetWindowRect(gSettings, &r);
+    GetWindowRect(owner, &o);
+    int x = o.left + ((o.right-o.left)-(r.right-r.left))/2;
+    int y = o.top + ((o.bottom-o.top)-(r.bottom-r.top))/2;
+    SetWindowPos(gSettings, HWND_TOP, x, y, 0, 0, SWP_NOSIZE);
+    ShowWindow(gSettings, SW_SHOW);
+    UpdateWindow(gSettings);
+}
+
 static LRESULT CALLBACK MainWndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     switch (m) {
     case WM_CREATE: {
@@ -265,12 +409,7 @@ static LRESULT CALLBACK MainWndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         }
 
         if (LOWORD(wp) == ID_SETTINGS) {
-            if (!gUnlocked) return 0;
-            MessageBoxW(h,
-                L"Cài đặt chỉ có thể thay đổi khi đã xác thực mật khẩu.\n\n"
-                L"Bản V1 đã bật cơ chế khóa toàn bộ thao tác thay đổi.",
-                L"Desktop Note - Cài đặt",
-                MB_OK | MB_ICONINFORMATION);
+            OpenSettings(h);
             return 0;
         }
 
