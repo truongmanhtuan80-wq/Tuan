@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <commdlg.h>
+#include <richedit.h>
 #include <string>
 #include <fstream>
 #include <sstream>
@@ -49,6 +50,15 @@
 #define ID_SET_NOTE_BG 3012
 #define ID_SET_NOTE_TEXT 3013
 #define ID_SET_ACCENT 3014
+#define IDC_NOTE_TOOLBAR 4001
+#define IDC_NOTE_FONT 4002
+#define IDC_NOTE_SIZE 4003
+#define IDC_NOTE_BOLD 4004
+#define IDC_NOTE_ITALIC 4005
+#define IDC_NOTE_UNDER 4006
+#define IDC_NOTE_TEXTCOLOR 4007
+#define IDC_NOTE_BGCOLOR 4008
+#define IDT_TOOLBAR 1201
 
 static HWND gMain = nullptr;
 static HWND gNote = nullptr;
@@ -57,6 +67,13 @@ static HWND gCalendar = nullptr;
 static HFONT gUiFont = nullptr;
 static HFONT gNoteFont = nullptr;
 static HBRUSH gNoteBgBrush = nullptr;
+static HWND gNoteToolbar = nullptr;
+static HWND gNoteFontCombo = nullptr;
+static HWND gNoteSizeCombo = nullptr;
+static HWND gNoteBold = nullptr;
+static HWND gNoteItalic = nullptr;
+static HWND gNoteUnderline = nullptr;
+static HMODULE gRichEditModule = nullptr;
 static bool gUnlocked = false;
 static bool gSettingsOpen = false;
 
@@ -169,22 +186,55 @@ static void LoadConfig() {
     }
 }
 
+struct RtfStream {
+    std::string data;
+    size_t pos=0;
+};
+
+static DWORD CALLBACK StreamOutProc(DWORD_PTR cookie, LPBYTE buf, LONG cb, LONG* pcb) {
+    RtfStream* s=reinterpret_cast<RtfStream*>(cookie);
+    size_t remain=s->data.size()-s->pos;
+    size_t n=std::min<size_t>(remain, static_cast<size_t>(cb));
+    if(n) memcpy(buf,s->data.data()+s->pos,n);
+    s->pos+=n;
+    *pcb=static_cast<LONG>(n);
+    return 0;
+}
+
+static DWORD CALLBACK StreamInProc(DWORD_PTR cookie, LPBYTE buf, LONG cb, LONG* pcb) {
+    RtfStream* s=reinterpret_cast<RtfStream*>(cookie);
+    size_t remain=s->data.size()-s->pos;
+    size_t n=std::min<size_t>(remain, static_cast<size_t>(cb));
+    if(n) memcpy(buf,s->data.data()+s->pos,n);
+    s->pos+=n;
+    *pcb=static_cast<LONG>(n);
+    return 0;
+}
+
 static void SaveNote() {
     if (!gNote) return;
-    int n = GetWindowTextLengthW(gNote);
-    std::wstring s(static_cast<size_t>(n) + 1, L'\0');
-    if (n > 0) {
-        GetWindowTextW(gNote, s.data(), n + 1);
-        s.resize(static_cast<size_t>(n));
-    } else {
-        s.clear();
+    RtfStream s;
+    EDITSTREAM es{};
+    es.dwCookie=reinterpret_cast<DWORD_PTR>(&s);
+    es.pfnCallback=StreamOutProc;
+    SendMessageW(gNote,EM_STREAMOUT,SF_RTF,reinterpret_cast<LPARAM>(&es));
+    if(!s.data.empty()) {
+        std::ofstream f(gNoteFile,std::ios::binary|std::ios::trunc);
+        if(f) f.write(s.data.data(),static_cast<std::streamsize>(s.data.size()));
     }
-    WriteText(gNoteFile, s);
 }
 
 static void LoadNote() {
-    std::wstring s = ReadText(gNoteFile);
-    SetWindowTextW(gNote, s.c_str());
+    if (!gNote) return;
+    std::ifstream f(gNoteFile,std::ios::binary);
+    if(!f) return;
+    std::string data((std::istreambuf_iterator<char>(f)),std::istreambuf_iterator<char>());
+    if(data.empty()) return;
+    RtfStream s; s.data=std::move(data);
+    EDITSTREAM es{};
+    es.dwCookie=reinterpret_cast<DWORD_PTR>(&s);
+    es.pfnCallback=StreamInProc;
+    SendMessageW(gNote,EM_STREAMIN,SF_RTF,reinterpret_cast<LPARAM>(&es));
 }
 
 static void ApplyFont(HWND h, HFONT f) {
@@ -402,8 +452,14 @@ static LRESULT CALLBACK CalendarProc(HWND h,UINT m,WPARAM wp,LPARAM lp) {
 
             bool today=(day==now.wDay && gCalendarMonth.wMonth==now.wMonth && gCalendarMonth.wYear==now.wYear);
             if(today) {
-                HBRUSH tb=CreateSolidBrush(gCfg.theme?RGB(50,100,155):RGB(220,235,255));
-                FillRect(dc,&cr,tb); DeleteObject(tb);
+                HPEN tp=CreatePen(PS_SOLID,2,AccentColor());
+                HGDIOBJ op=SelectObject(dc,tp);
+                HGDIOBJ ob=SelectObject(dc,GetStockObject(NULL_BRUSH));
+                int cx=(cr.left+cr.right)/2;
+                int cy=cr.top+13;
+                int rad=14;
+                Ellipse(dc,cx-rad,cy-rad,cx+rad,cy+rad);
+                SelectObject(dc,ob); SelectObject(dc,op); DeleteObject(tp);
             }
             wchar_t s[64]{};
             LunarDate ld=SolarToLunar(day,gCalendarMonth.wMonth,gCalendarMonth.wYear);
@@ -460,6 +516,104 @@ static void PaintHeader(HWND h) {
     InvalidateRect(gCalendar,nullptr,TRUE);
 }
 
+
+static void SetNoteDefaultFormat() {
+    if(!gNote) return;
+    CHARRANGE all{-1, -1};
+    SendMessageW(gNote,EM_EXSETSEL,0,reinterpret_cast<LPARAM>(&all));
+    CHARFORMAT2W cf{};
+    cf.cbSize=sizeof(cf);
+    cf.dwMask=CFM_FACE|CFM_SIZE|CFM_COLOR;
+    cf.yHeight=gCfg.noteFontSize*20;
+    cf.crTextColor=gCfg.noteText;
+    wcscpy_s(cf.szFaceName,L"Segoe UI");
+    SendMessageW(gNote,EM_SETCHARFORMAT,SCF_SELECTION|SPF_DONTSETDEFAULT,
+                 reinterpret_cast<LPARAM>(&cf));
+    SendMessageW(gNote,EM_SETBKGNDCOLOR,0,gCfg.noteBg);
+}
+
+static void ApplySelectionFormat(DWORD mask, DWORD effects=0, LONG yHeight=0, COLORREF color=0, const wchar_t* face=nullptr) {
+    if(!gNote || !gUnlocked) return;
+    CHARFORMAT2W cf{};
+    cf.cbSize=sizeof(cf);
+    cf.dwMask=mask;
+    cf.dwEffects=effects;
+    if(mask & CFM_SIZE) cf.yHeight=yHeight;
+    if(mask & CFM_COLOR) cf.crTextColor=color;
+    if(mask & CFM_FACE) wcscpy_s(cf.szFaceName,face?face:L"Segoe UI");
+    SendMessageW(gNote,EM_SETCHARFORMAT,SCF_SELECTION,reinterpret_cast<LPARAM>(&cf));
+    SaveNote();
+}
+
+static bool PickNoteColor(HWND owner, COLORREF current, COLORREF& result) {
+    static COLORREF custom[16]{};
+    CHOOSECOLORW cc{};
+    cc.lStructSize=sizeof(cc);
+    cc.hwndOwner=owner;
+    cc.rgbResult=current;
+    cc.lpCustColors=custom;
+    cc.Flags=CC_FULLOPEN|CC_RGBINIT;
+    if(ChooseColorW(&cc)){result=cc.rgbResult;return true;}
+    return false;
+}
+
+static void PopulateFontCombo() {
+    if(!gNoteFontCombo) return;
+    const wchar_t* fonts[]={L"Segoe UI",L"Arial",L"Calibri",L"Tahoma",L"Times New Roman",L"Verdana",L"Consolas"};
+    for(auto f:fonts) SendMessageW(gNoteFontCombo,CB_ADDSTRING,0,(LPARAM)f);
+    SendMessageW(gNoteFontCombo,CB_SETCURSEL,0,0);
+}
+
+static void ShowNoteToolbar(bool show) {
+    if(!gNoteToolbar) return;
+    ShowWindow(gNoteToolbar,show?SW_SHOW:SW_HIDE);
+    if(show) {
+        RECT r{}; GetClientRect(gMain,&r);
+        int w=r.right, h=r.bottom;
+        int leftW=std::max(380,(w-55)/2);
+        int rightX=leftW+35;
+        int rightW=std::max(380,w-rightX-20);
+        MoveWindow(gNoteToolbar,rightX+11,255,rightW-22,32,TRUE);
+    }
+}
+
+static void UpdateToolbarFromSelection() {
+    if(!gNote || !gNoteToolbar) return;
+    CHARFORMAT2W cf{};
+    cf.cbSize=sizeof(cf);
+    SendMessageW(gNote,EM_GETCHARFORMAT,SCF_SELECTION,reinterpret_cast<LPARAM>(&cf));
+    SendMessageW(gNoteBold,BM_SETCHECK,(cf.dwEffects&CFE_BOLD)?BST_CHECKED:BST_UNCHECKED,0);
+    SendMessageW(gNoteItalic,BM_SETCHECK,(cf.dwEffects&CFE_ITALIC)?BST_CHECKED:BST_UNCHECKED,0);
+    SendMessageW(gNoteUnderline,BM_SETCHECK,(cf.dwEffects&CFE_UNDERLINE)?BST_CHECKED:BST_UNCHECKED,0);
+    int size=cf.yHeight/20;
+    wchar_t b[16]{}; swprintf_s(b,L"%d",size>0?size:gCfg.noteFontSize);
+    SetWindowTextW(gNoteSizeCombo,b);
+}
+
+static void CreateNoteToolbar(HWND h) {
+    gNoteToolbar=CreateWindowW(L"STATIC",L"",WS_CHILD|WS_VISIBLE|WS_BORDER,
+        0,0,500,32,h,(HMENU)IDC_NOTE_TOOLBAR,GetModuleHandleW(nullptr),nullptr);
+    gNoteFontCombo=CreateWindowW(L"COMBOBOX",L"",WS_CHILD|WS_VISIBLE|CBS_DROPDOWNLIST,
+        6,3,125,26,gNoteToolbar,(HMENU)IDC_NOTE_FONT,GetModuleHandleW(nullptr),nullptr);
+    PopulateFontCombo();
+    gNoteSizeCombo=CreateWindowW(L"COMBOBOX",L"",WS_CHILD|WS_VISIBLE|CBS_DROPDOWN|CBS_AUTOHSCROLL,
+        137,3,55,26,gNoteToolbar,(HMENU)IDC_NOTE_SIZE,GetModuleHandleW(nullptr),nullptr);
+    const int sizes[]={10,11,12,14,16,18,20,22,24,28,32,36,48};
+    for(int v:sizes){wchar_t b[8]{};swprintf_s(b,L"%d",v);SendMessageW(gNoteSizeCombo,CB_ADDSTRING,0,(LPARAM)b);}
+    gNoteBold=CreateWindowW(L"BUTTON",L"B",WS_CHILD|WS_VISIBLE|BS_AUTOCHECKBOX|BS_PUSHLIKE,
+        198,3,32,26,gNoteToolbar,(HMENU)IDC_NOTE_BOLD,GetModuleHandleW(nullptr),nullptr);
+    gNoteItalic=CreateWindowW(L"BUTTON",L"I",WS_CHILD|WS_VISIBLE|BS_AUTOCHECKBOX|BS_PUSHLIKE,
+        234,3,32,26,gNoteToolbar,(HMENU)IDC_NOTE_ITALIC,GetModuleHandleW(nullptr),nullptr);
+    gNoteUnderline=CreateWindowW(L"BUTTON",L"U",WS_CHILD|WS_VISIBLE|BS_AUTOCHECKBOX|BS_PUSHLIKE,
+        270,3,32,26,gNoteToolbar,(HMENU)IDC_NOTE_UNDER,GetModuleHandleW(nullptr),nullptr);
+    CreateWindowW(L"BUTTON",L"Màu chữ",WS_CHILD|WS_VISIBLE,
+        306,3,75,26,gNoteToolbar,(HMENU)IDC_NOTE_TEXTCOLOR,GetModuleHandleW(nullptr),nullptr);
+    CreateWindowW(L"BUTTON",L"Nền",WS_CHILD|WS_VISIBLE,
+        385,3,60,26,gNoteToolbar,(HMENU)IDC_NOTE_BGCOLOR,GetModuleHandleW(nullptr),nullptr);
+    for(HWND c=GetWindow(gNoteToolbar,GW_CHILD);c;c=GetWindow(c,GW_HWNDNEXT)) ApplyFont(c,gUiFont);
+    ShowWindow(gNoteToolbar,SW_HIDE);
+}
+
 static void SetLocked(bool locked) {
     gUnlocked=!locked;
     EnableWindow(gNote,gUnlocked);
@@ -474,6 +628,7 @@ static void SetLocked(bool locked) {
 
     SetWindowTextW(GetDlgItem(gMain,IDC_UNLOCK),gUnlocked?L"Khóa lại":L"Mở khóa");
     SetWindowTextW(gStatus,gUnlocked?L"ĐÃ MỞ KHÓA":L"ĐANG KHÓA");
+    ShowNoteToolbar(gUnlocked && GetFocus()==gNote);
     InvalidateRect(gMain,nullptr,TRUE);
 }
 
@@ -601,6 +756,17 @@ static void SettingsApplyFromUI(SettingsState* s) {
     CreateFonts();
     RebuildNoteBrush();
     ApplyFont(gNote,gNoteFont);
+    SendMessageW(gNote,EM_SETBKGNDCOLOR,0,gCfg.noteBg);
+    CHARRANGE all{-1,-1};
+    SendMessageW(gNote,EM_EXSETSEL,0,reinterpret_cast<LPARAM>(&all));
+    CHARFORMAT2W cf{};
+    cf.cbSize=sizeof(cf);
+    cf.dwMask=CFM_SIZE|CFM_COLOR|CFM_FACE;
+    cf.yHeight=gCfg.noteFontSize*20;
+    cf.crTextColor=gCfg.noteText;
+    wcscpy_s(cf.szFaceName,L"Segoe UI");
+    SendMessageW(gNote,EM_SETCHARFORMAT,SCF_SELECTION,reinterpret_cast<LPARAM>(&cf));
+    SendMessageW(gNote,EM_SETSEL,-1,-1);
     ApplyFontsToChildren(gMain);
     ApplyOpacity();
     InvalidateRect(gNote,nullptr,TRUE);
@@ -784,18 +950,21 @@ static LRESULT CALLBACK MainProc(HWND h,UINT m,WPARAM wp,LPARAM lp) {
     case WM_CREATE: {
         gMain=h;
         gDataDir=GetModuleDir();
-        gNoteFile=gDataDir+L"\\DesktopNote_Note.txt";
+        gNoteFile=gDataDir+L"\\DesktopNote_Note.rtf";
         gConfigFile=gDataDir+L"\\DesktopNote_Config.txt";
         LoadConfig();
         CreateFonts();
         TodayToCalendar();
+        gRichEditModule=LoadLibraryW(L"Msftedit.dll");
 
         gCalendar=CreateWindowExW(0,L"DesktopNoteCalendar",L"",WS_CHILD|WS_VISIBLE,
             18,105,430,310,h,nullptr,GetModuleHandleW(nullptr),nullptr);
 
-        gNote=CreateWindowExW(WS_EX_CLIENTEDGE,L"EDIT",L"",
-            WS_CHILD|WS_VISIBLE|ES_MULTILINE|ES_AUTOVSCROLL|ES_WANTRETURN|WS_VSCROLL,
-            465,105,440,310,h,(HMENU)IDC_NOTE,GetModuleHandleW(nullptr),nullptr);
+        gNote=CreateWindowExW(WS_EX_CLIENTEDGE,L"RICHEDIT50W",L"",
+            WS_CHILD|WS_VISIBLE|ES_MULTILINE|ES_AUTOVSCROLL|ES_WANTRETURN|WS_VSCROLL|WS_HSCROLL,
+            476,290,430,180,h,(HMENU)IDC_NOTE,GetModuleHandleW(nullptr),nullptr);
+        SendMessageW(gNote,EM_SETOPTIONS,0,SendMessageW(gNote,EM_GETOPTIONS,0,0)|ECOOP_OR|ECO_AUTOVSCROLL|ECO_AUTOHSCROLL);
+        SendMessageW(gNote,EM_SETEVENTMASK,0,ENM_SELCHANGE|ENM_CHANGE|ENM_DROPFILES);
 
         gStatus=CreateWindowW(L"STATIC",L"ĐANG KHÓA",WS_CHILD|WS_VISIBLE,
             18,425,300,28,h,nullptr,GetModuleHandleW(nullptr),nullptr);
@@ -804,14 +973,26 @@ static LRESULT CALLBACK MainProc(HWND h,UINT m,WPARAM wp,LPARAM lp) {
         CreateWindowW(L"BUTTON",L"Cài đặt",WS_CHILD|WS_VISIBLE,765,420,105,34,h,(HMENU)IDC_SETTINGS,GetModuleHandleW(nullptr),nullptr);
         CreateWindowW(L"BUTTON",L"Khóa",WS_CHILD|WS_VISIBLE,535,420,105,34,h,(HMENU)IDC_LOCK,GetModuleHandleW(nullptr),nullptr);
 
+        CreateNoteToolbar(h);
         LoadNote();
         RebuildNoteBrush();
+        SendMessageW(gNote,EM_SETBKGNDCOLOR,0,gCfg.noteBg);
+        if(GetWindowTextLengthW(gNote)==0) SetNoteDefaultFormat();
+        else SendMessageW(gNote,EM_SETSEL,-1,-1);
         ApplyFontsToChildren(h);
+        SetNoteDefaultFormat();
         SetLocked(true);
         if(gCfg.showTop) SetWindowPos(gMain,HWND_TOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE);
         ApplyOpacity();
         SetTimer(h,IDT_CLOCK,1000,nullptr);
         SetTimer(h,IDT_AUTOSAVE,3000,nullptr);
+        return 0;
+    }
+
+    case WM_GETMINMAXINFO: {
+        MINMAXINFO* mi=reinterpret_cast<MINMAXINFO*>(lp);
+        mi->ptMinTrackSize.x=820;
+        mi->ptMinTrackSize.y=500;
         return 0;
     }
 
@@ -838,8 +1019,63 @@ static LRESULT CALLBACK MainProc(HWND h,UINT m,WPARAM wp,LPARAM lp) {
             OpenSettings(h);
             return 0;
         }
+        if(LOWORD(wp)==IDC_NOTE && HIWORD(wp)==EN_SETFOCUS && gUnlocked) {
+            ShowNoteToolbar(true);
+            UpdateToolbarFromSelection();
+            return 0;
+        }
+        if(LOWORD(wp)==IDC_NOTE && HIWORD(wp)==EN_KILLFOCUS) {
+            SetTimer(h,IDT_TOOLBAR,1200,nullptr);
+            return 0;
+        }
         if(LOWORD(wp)==IDC_NOTE && HIWORD(wp)==EN_CHANGE && gUnlocked) {
-            // autosaved every few seconds; this avoids disk writes on every keystroke
+            return 0;
+        }
+        if(LOWORD(wp)==IDC_NOTE_FONT) {
+            int idx=(int)SendMessageW(gNoteFontCombo,CB_GETCURSEL,0,0);
+            if(idx>=0) {
+                wchar_t face[64]{};
+                SendMessageW(gNoteFontCombo,CB_GETLBTEXT,idx,(LPARAM)face);
+                ApplySelectionFormat(CFM_FACE,0,0,0,face);
+            }
+            return 0;
+        }
+        if(LOWORD(wp)==IDC_NOTE_SIZE && (HIWORD(wp)==CBN_SELCHANGE || HIWORD(wp)==CBN_EDITCHANGE)) {
+            wchar_t b[32]{}; GetWindowTextW(gNoteSizeCombo,b,32);
+            int v=std::clamp(IntValue(b,gCfg.noteFontSize),8,72);
+            ApplySelectionFormat(CFM_SIZE,0,v*20);
+            return 0;
+        }
+        if(LOWORD(wp)==IDC_NOTE_BOLD) {
+            bool on=SendMessageW(gNoteBold,BM_GETCHECK,0,0)==BST_CHECKED;
+            ApplySelectionFormat(CFM_BOLD,on?CFE_BOLD:0);
+            return 0;
+        }
+        if(LOWORD(wp)==IDC_NOTE_ITALIC) {
+            bool on=SendMessageW(gNoteItalic,BM_GETCHECK,0,0)==BST_CHECKED;
+            ApplySelectionFormat(CFM_ITALIC,on?CFE_ITALIC:0);
+            return 0;
+        }
+        if(LOWORD(wp)==IDC_NOTE_UNDER) {
+            bool on=SendMessageW(gNoteUnderline,BM_GETCHECK,0,0)==BST_CHECKED;
+            ApplySelectionFormat(CFM_UNDERLINE,on?CFE_UNDERLINE:0);
+            return 0;
+        }
+        if(LOWORD(wp)==IDC_NOTE_TEXTCOLOR) {
+            COLORREF c=gCfg.noteText;
+            if(PickNoteColor(h,c,c)) {
+                ApplySelectionFormat(CFM_COLOR,0,0,c);
+            }
+            return 0;
+        }
+        if(LOWORD(wp)==IDC_NOTE_BGCOLOR) {
+            COLORREF c=gCfg.noteBg;
+            if(PickNoteColor(h,c,c)) {
+                gCfg.noteBg=c; RebuildNoteBrush();
+                SendMessageW(gNote,EM_SETBKGNDCOLOR,0,c);
+                InvalidateRect(gNote,nullptr,TRUE);
+                SaveConfig();
+            }
             return 0;
         }
         break;
@@ -859,11 +1095,25 @@ static LRESULT CALLBACK MainProc(HWND h,UINT m,WPARAM wp,LPARAM lp) {
         return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
     }
 
+    case WM_NOTIFY: {
+        NMHDR* nh=reinterpret_cast<NMHDR*>(lp);
+        if(nh && nh->hwndFrom==gNote && nh->code==EN_SELCHANGE) {
+            UpdateToolbarFromSelection();
+            return 0;
+        }
+        break;
+    }
+
+    case WM_SETFOCUS:
+        if(gUnlocked) ShowNoteToolbar(true);
+        break;
+
     case WM_TIMER:
         if(wp==IDT_CLOCK) {
             InvalidateRect(h,nullptr,TRUE);
             InvalidateRect(gCalendar,nullptr,TRUE);
         } else if(wp==IDT_AUTOSAVE && gUnlocked && gCfg.autosave) SaveNote();
+        else if(wp==IDT_TOOLBAR) { KillTimer(h,IDT_TOOLBAR); if(GetFocus()!=gNote) ShowNoteToolbar(false); }
         return 0;
 
     case WM_PAINT: {
@@ -927,17 +1177,24 @@ static LRESULT CALLBACK MainProc(HWND h,UINT m,WPARAM wp,LPARAM lp) {
 
     case WM_SIZE: {
         int w=LOWORD(lp), hh=HIWORD(lp);
-        int leftW=std::max(380,(w-55)/2);
+        int leftW=std::max(360,(w-55)/2);
         int rightX=leftW+35;
-        int rightW=std::max(380,w-rightX-20);
-        int contentH=std::max(220,hh-160);
+        int rightW=std::max(360,w-rightX-20);
+        int bottom=std::max(260,hh-75);
 
-        MoveWindow(gCalendar,26,116,leftW-43,contentH-5,TRUE);
-        MoveWindow(gNote,rightX+11,258,rightW-22,std::max(150,hh-344),TRUE);
+        // Calendar stays inside its frame.
+        MoveWindow(gCalendar,26,116,leftW-43,std::max(180,bottom-126),TRUE);
+
+        // Note toolbar and rich editor resize with the window.
+        int noteLeft=rightX+11, noteWidth=rightW-22;
+        MoveWindow(gNoteToolbar,noteLeft,258,noteWidth,32,TRUE);
+        MoveWindow(gNote,noteLeft,296,noteWidth,std::max(120,bottom-296-8),TRUE);
+
         MoveWindow(gStatus,26,hh-52,300,28,TRUE);
         MoveWindow(GetDlgItem(h,IDC_LOCK),rightX,hh-60,105,34,TRUE);
         MoveWindow(GetDlgItem(h,IDC_UNLOCK),rightX+115,hh-60,105,34,TRUE);
         MoveWindow(GetDlgItem(h,IDC_SETTINGS),rightX+230,hh-60,105,34,TRUE);
+        InvalidateRect(h,nullptr,TRUE);
         return 0;
     }
 
@@ -955,6 +1212,7 @@ static LRESULT CALLBACK MainProc(HWND h,UINT m,WPARAM wp,LPARAM lp) {
         if(gNoteFont) DeleteObject(gNoteFont);
         if(gUiFont) DeleteObject(gUiFont);
         if(gNoteBgBrush) DeleteObject(gNoteBgBrush);
+        if(gRichEditModule) { FreeLibrary(gRichEditModule); gRichEditModule=nullptr; }
         PostQuitMessage(0);
         return 0;
     }
