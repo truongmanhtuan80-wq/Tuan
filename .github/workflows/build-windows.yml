@@ -1,4 +1,3 @@
-
 name: Build Desktop Note Windows
 
 on:
@@ -24,7 +23,8 @@ jobs:
       - name: Build DesktopNote.exe
         shell: cmd
         run: |
-          cl.exe /nologo /O2 /EHsc DesktopNote.cpp /Fe:DesktopNote.exe user32.lib gdi32.lib comctl32.lib
+          chcp 65001 >nul
+          cl.exe /nologo /O2 /EHsc /utf-8 DesktopNote.cpp /Fe:DesktopNote.exe user32.lib gdi32.lib comctl32.lib
           if not exist DesktopNote.exe exit /b 1
 
       - name: Upload DesktopNote.exe
